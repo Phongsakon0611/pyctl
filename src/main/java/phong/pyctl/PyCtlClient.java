@@ -1,6 +1,5 @@
 package phong.pyctl;
 
-import net.minecraft.util.math.BlockPos;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -17,6 +16,7 @@ import net.minecraft.text.Text;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import org.python.util.PythonInterpreter;
 
 import java.nio.file.Files;
@@ -64,7 +64,6 @@ public class PyCtlClient implements ClientModInitializer {
     }
 
     public static class Api {
-        // ---- ปุ่มกดค้าง ----
         public void key(String k, int v) {
             for (int i = 0; i < NAMES.length; i++) {
                 if (NAMES[i].equals(k)) want[i] = v != 0;
@@ -75,7 +74,6 @@ public class PyCtlClient implements ClientModInitializer {
             Thread.sleep((long) (sec * 1000));
         }
 
-        // ---- คลิกครั้งเดียว ----
         public void click(String k) {
             MinecraftClient c = mcc();
             c.execute(() -> tap(k.equals("use") ? c.options.useKey : c.options.attackKey));
@@ -107,7 +105,6 @@ public class PyCtlClient implements ClientModInitializer {
             c.execute(() -> c.setScreen(null));
         }
 
-        // ---- กล้อง ----
         public void turn(double yaw, double pitch) {
             MinecraftClient c = mcc();
             c.execute(() -> {
@@ -140,7 +137,6 @@ public class PyCtlClient implements ClientModInitializer {
             });
         }
 
-        // ---- อ่านข้อมูล ----
         public double x() {
             return num(() -> { var p = mcc().player; return p == null ? 0.0 : p.getX(); });
         }
@@ -183,7 +179,6 @@ public class PyCtlClient implements ClientModInitializer {
             return r == null ? "none" : r;
         }
 
-        // คืนค่า [x, y, z, ระยะห่าง] ของมอนที่ใกล้สุด หรือ None ถ้าไม่มี
         public double[] nearest(double range) {
             return onMain(() -> {
                 MinecraftClient c = mcc();
@@ -201,7 +196,55 @@ public class PyCtlClient implements ClientModInitializer {
             });
         }
 
-        // ---- แชท/คำสั่ง ----
+        public String block(int x, int y, int z) {
+            String r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null) return "none";
+                return Registries.BLOCK.getId(c.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
+            });
+            return r == null ? "none" : r;
+        }
+
+        public String ahead(int dist, int dy) {
+            String r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null || c.player == null) return "none";
+                BlockPos p = c.player.getBlockPos();
+                var d = c.player.getHorizontalFacing();
+                BlockPos t = p.add(d.getOffsetX() * dist, dy, d.getOffsetZ() * dist);
+                return Registries.BLOCK.getId(c.world.getBlockState(t).getBlock()).toString();
+            });
+            return r == null ? "none" : r;
+        }
+
+        public double[] find(String name, int range) {
+            final int rg = Math.min(range, 24);
+            return onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null || c.player == null) return null;
+                String id = name.contains(":") ? name : "minecraft:" + name;
+                BlockPos p = c.player.getBlockPos();
+                BlockPos.Mutable m = new BlockPos.Mutable();
+                double bd = 1e18;
+                int bx = 0, by = 0, bz = 0;
+                boolean found = false;
+                for (int dx = -rg; dx <= rg; dx++) {
+                    for (int dy = -rg; dy <= rg; dy++) {
+                        for (int dz = -rg; dz <= rg; dz++) {
+                            m.set(p.getX() + dx, p.getY() + dy, p.getZ() + dz);
+                            String bid = Registries.BLOCK.getId(c.world.getBlockState(m).getBlock()).toString();
+                            if (bid.equals(id)) {
+                                double d = dx * dx + dy * dy + dz * dz;
+                                if (d < bd) { bd = d; bx = m.getX(); by = m.getY(); bz = m.getZ(); found = true; }
+                            }
+                        }
+                    }
+                }
+                if (!found) return null;
+                return new double[]{bx + 0.5, by + 0.5, bz + 0.5, Math.sqrt(bd)};
+            });
+        }
+
         public void say(String s) {
             msg(s);
         }
@@ -318,75 +361,4 @@ public class PyCtlClient implements ClientModInitializer {
             }
         });
     }
-    }
-    // ชื่อบล็อกที่พิกัดนี้ เช่น "minecraft:stone" (ใส่เลขจำนวนเต็ม)
-        public String block(int x, int y, int z) {
-            String r = onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.world == null) return "none";
-                return Registries.BLOCK.getId(c.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
-            });
-            return r == null ? "none" : r;
-        }
-
-        // บล็อกที่อยู่ข้างหน้าตามทิศที่หัน: dist = ระยะ, dy = สูง/ต่ำ (0 = ระดับเท้า, -1 = พื้น, 1 = ระดับหัว)
-        public String ahead(int dist, int dy) {
-            String r = onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.world == null || c.player == null) return "none";
-                BlockPos p = c.player.getBlockPos();
-                var d = c.player.getHorizontalFacing();
-                BlockPos t = p.add(d.getOffsetX() * dist, dy, d.getOffsetZ() * dist);
-                return Registries.BLOCK.getId(c.world.getBlockState(t).getBlock()).toString();
-            });
-            return r == null ? "none" : r;
-        }
-    // ชื่อบล็อกที่พิกัดนี้ เช่น "minecraft:stone" (ใส่เลขจำนวนเต็ม)
-        public String block(int x, int y, int z) {
-            String r = onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.world == null) return "none";
-                return Registries.BLOCK.getId(c.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
-            });
-            return r == null ? "none" : r;
-        }
-
-        // บล็อกที่อยู่ข้างหน้าตามทิศที่หัน: dist = ระยะ, dy = สูง/ต่ำ (0 = ระดับเท้า, -1 = พื้น, 1 = ระดับหัว)
-        public String ahead(int dist, int dy) {
-            String r = onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.world == null || c.player == null) return "none";
-                BlockPos p = c.player.getBlockPos();
-                var d = c.player.getHorizontalFacing();
-                BlockPos t = p.add(d.getOffsetX() * dist, dy, d.getOffsetZ() * dist);
-                return Registries.BLOCK.getId(c.world.getBlockState(t).getBlock()).toString();
-            });
-            return r == null ? "none" : r;
-        }
-
-        // บล็อกตามชื่อที่ใกล้สุดรอบตัว คืน [x, y, z, ระยะ] (พิกัดกลางบล็อก) หรือ None
-        public double[] find(String name, int range) {
-            final int rg = Math.min(range, 24);
-            return onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.world == null || c.player == null) return null;
-                String id = name.contains(":") ? name : "minecraft:" + name;
-                BlockPos p = c.player.getBlockPos();
-                BlockPos.Mutable m = new BlockPos.Mutable();
-                double bd = 1e18;
-                int bx = 0, by = 0, bz = 0;
-                boolean found = false;
-                for (int dx = -rg; dx <= rg; dx++)
-                    for (int dy = -rg; dy <= rg; dy++)
-                        for (int dz = -rg; dz <= rg; dz++) {
-                            m.set(p.getX() + dx, p.getY() + dy, p.getZ() + dz);
-                            String bid = Registries.BLOCK.getId(c.world.getBlockState(m).getBlock()).toString();
-                            if (bid.equals(id)) {
-                                double d = dx * dx + dy * dy + dz * dz;
-                                if (d < bd) { bd = d; bx = m.getX(); by = m.getY(); bz = m.getZ(); found = true; }
-                            }
-                        }
-                if (!found) return null;
-                return new double[]{bx + 0.5, by + 0.5, bz + 0.5, Math.sqrt(bd)};
-            });
-        }
+}
