@@ -9,11 +9,21 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.GameOptions;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
 import org.python.util.PythonInterpreter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class PyCtlClient implements ClientModInitializer {
     static final String[] NAMES = {"w", "a", "s", "d", "space", "shift", "sprint", "attack", "use"};
@@ -22,7 +32,38 @@ public class PyCtlClient implements ClientModInitializer {
     static volatile Thread running;
     static Path dir;
 
+    static MinecraftClient mcc() {
+        return MinecraftClient.getInstance();
+    }
+
+    static <T> T onMain(Supplier<T> s) {
+        MinecraftClient c = mcc();
+        if (c.isOnThread()) return s.get();
+        try {
+            return c.submit(s).get();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static double num(Supplier<Double> s) {
+        Double v = onMain(s);
+        return v == null ? 0 : v;
+    }
+
+    static void tap(KeyBinding kb) {
+        KeyBinding.onKeyPressed(InputUtil.fromTranslationKey(kb.getBoundKeyTranslationKey()));
+    }
+
+    static void msg(String s) {
+        MinecraftClient c = mcc();
+        c.execute(() -> {
+            if (c.player != null) c.player.sendMessage(Text.literal(s), false);
+        });
+    }
+
     public static class Api {
+        // ---- ปุ่มกดค้าง ----
         public void key(String k, int v) {
             for (int i = 0; i < NAMES.length; i++) {
                 if (NAMES[i].equals(k)) want[i] = v != 0;
@@ -33,8 +74,41 @@ public class PyCtlClient implements ClientModInitializer {
             Thread.sleep((long) (sec * 1000));
         }
 
+        // ---- คลิกครั้งเดียว ----
+        public void click(String k) {
+            MinecraftClient c = mcc();
+            c.execute(() -> tap(k.equals("use") ? c.options.useKey : c.options.attackKey));
+        }
+
+        public void slot(int n) {
+            if (n < 1 || n > 9) return;
+            MinecraftClient c = mcc();
+            c.execute(() -> tap(c.options.hotbarKeys[n - 1]));
+        }
+
+        public void drop() {
+            MinecraftClient c = mcc();
+            c.execute(() -> tap(c.options.dropKey));
+        }
+
+        public void swap() {
+            MinecraftClient c = mcc();
+            c.execute(() -> tap(c.options.swapHandsKey));
+        }
+
+        public void inventory() {
+            MinecraftClient c = mcc();
+            c.execute(() -> tap(c.options.inventoryKey));
+        }
+
+        public void closeScreen() {
+            MinecraftClient c = mcc();
+            c.execute(() -> c.setScreen(null));
+        }
+
+        // ---- กล้อง ----
         public void turn(double yaw, double pitch) {
-            MinecraftClient c = MinecraftClient.getInstance();
+            MinecraftClient c = mcc();
             c.execute(() -> {
                 if (c.player == null) return;
                 c.player.setYaw(c.player.getYaw() + (float) yaw);
@@ -43,16 +117,108 @@ public class PyCtlClient implements ClientModInitializer {
             });
         }
 
-        public void say(String msg) {
-            msg(msg);
+        public void setLook(double yaw, double pitch) {
+            MinecraftClient c = mcc();
+            c.execute(() -> {
+                if (c.player == null) return;
+                c.player.setYaw((float) yaw);
+                c.player.setPitch((float) Math.max(-90, Math.min(90, pitch)));
+            });
         }
-    }
 
-    static void msg(String s) {
-        MinecraftClient c = MinecraftClient.getInstance();
-        c.execute(() -> {
-            if (c.player != null) c.player.sendMessage(Text.literal(s), false);
-        });
+        public void lookAt(double x, double y, double z) {
+            MinecraftClient c = mcc();
+            c.execute(() -> {
+                if (c.player == null) return;
+                double dx = x - c.player.getX();
+                double dy = y - c.player.getEyeY();
+                double dz = z - c.player.getZ();
+                double h = Math.sqrt(dx * dx + dz * dz);
+                c.player.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
+                c.player.setPitch((float) -Math.toDegrees(Math.atan2(dy, h)));
+            });
+        }
+
+        // ---- อ่านข้อมูล ----
+        public double x() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : p.getX(); });
+        }
+
+        public double y() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : p.getY(); });
+        }
+
+        public double z() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : p.getZ(); });
+        }
+
+        public double yaw() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.getYaw(); });
+        }
+
+        public double pitch() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.getPitch(); });
+        }
+
+        public double health() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.getHealth(); });
+        }
+
+        public double food() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.getHungerManager().getFoodLevel(); });
+        }
+
+        public String target() {
+            String r = onMain(() -> {
+                MinecraftClient c = mcc();
+                HitResult h = c.crosshairTarget;
+                if (h == null || c.world == null) return "none";
+                if (h instanceof BlockHitResult b && h.getType() == HitResult.Type.BLOCK)
+                    return "block:" + Registries.BLOCK.getId(c.world.getBlockState(b.getBlockPos()).getBlock());
+                if (h instanceof EntityHitResult e)
+                    return "entity:" + Registries.ENTITY_TYPE.getId(e.getEntity().getType());
+                return "none";
+            });
+            return r == null ? "none" : r;
+        }
+
+        // คืนค่า [x, y, z, ระยะห่าง] ของมอนที่ใกล้สุด หรือ None ถ้าไม่มี
+        public double[] nearest(double range) {
+            return onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.player == null || c.world == null) return null;
+                List<LivingEntity> list = c.world.getEntitiesByClass(LivingEntity.class,
+                    c.player.getBoundingBox().expand(range), e -> e != c.player && e.isAlive());
+                LivingEntity best = null;
+                double bd = 1e18;
+                for (LivingEntity e : list) {
+                    double d = e.squaredDistanceTo(c.player);
+                    if (d < bd) { bd = d; best = e; }
+                }
+                if (best == null) return null;
+                return new double[]{best.getX(), best.getY() + best.getHeight() / 2.0, best.getZ(), Math.sqrt(bd)};
+            });
+        }
+
+        // ---- แชท/คำสั่ง ----
+        public void say(String s) {
+            msg(s);
+        }
+
+        public void chat(String s) {
+            MinecraftClient c = mcc();
+            c.execute(() -> {
+                if (c.player != null) c.player.networkHandler.sendChatMessage(s);
+            });
+        }
+
+        public void command(String s) {
+            MinecraftClient c = mcc();
+            String cmd = s.startsWith("/") ? s.substring(1) : s;
+            c.execute(() -> {
+                if (c.player != null) c.player.networkHandler.sendChatCommand(cmd);
+            });
+        }
     }
 
     static void clearKeys() {
@@ -81,9 +247,13 @@ public class PyCtlClient implements ClientModInitializer {
                 py.execfile(f.toString());
                 msg("[py] " + name + " จบแล้ว");
             } catch (Throwable e) {
-                e.printStackTrace();
-                String m = String.valueOf(e.getMessage());
-                msg("[py] error: " + (m.length() > 200 ? m.substring(0, 200) : m));
+                String m = e.toString();
+                if (m.contains("InterruptedException")) {
+                    msg("[py] หยุดแล้ว");
+                } else {
+                    e.printStackTrace();
+                    msg("[py] error: " + (m.length() > 200 ? m.substring(0, 200) : m));
+                }
             } finally {
                 clearKeys();
             }
@@ -116,6 +286,18 @@ public class PyCtlClient implements ClientModInitializer {
                     stop();
                     return 1;
                 }))
+                .then(ClientCommandManager.literal("list").executes(ctx -> {
+                    try (Stream<Path> s = Files.list(dir)) {
+                        String names = s.map(p -> p.getFileName().toString())
+                            .filter(n -> n.endsWith(".py"))
+                            .map(n -> n.substring(0, n.length() - 3))
+                            .sorted().collect(Collectors.joining(", "));
+                        msg("[py] " + names);
+                    } catch (Exception e) {
+                        msg("[py] อ่านโฟลเดอร์ไม่ได้");
+                    }
+                    return 1;
+                }))
                 .then(ClientCommandManager.argument("name", StringArgumentType.word())
                     .executes(ctx -> {
                         run(StringArgumentType.getString(ctx, "name"));
@@ -135,4 +317,4 @@ public class PyCtlClient implements ClientModInitializer {
             }
         });
     }
-}
+    }
