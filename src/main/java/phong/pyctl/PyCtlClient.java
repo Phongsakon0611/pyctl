@@ -341,6 +341,28 @@ public class PyCtlClient implements ClientModInitializer {
             });
             return r == null ? "none" : r;
         }
+    // ชื่อบล็อกที่พิกัดนี้ เช่น "minecraft:stone" (ใส่เลขจำนวนเต็ม)
+        public String block(int x, int y, int z) {
+            String r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null) return "none";
+                return Registries.BLOCK.getId(c.world.getBlockState(new BlockPos(x, y, z)).getBlock()).toString();
+            });
+            return r == null ? "none" : r;
+        }
+
+        // บล็อกที่อยู่ข้างหน้าตามทิศที่หัน: dist = ระยะ, dy = สูง/ต่ำ (0 = ระดับเท้า, -1 = พื้น, 1 = ระดับหัว)
+        public String ahead(int dist, int dy) {
+            String r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null || c.player == null) return "none";
+                BlockPos p = c.player.getBlockPos();
+                var d = c.player.getHorizontalFacing();
+                BlockPos t = p.add(d.getOffsetX() * dist, dy, d.getOffsetZ() * dist);
+                return Registries.BLOCK.getId(c.world.getBlockState(t).getBlock()).toString();
+            });
+            return r == null ? "none" : r;
+        }
 
         // บล็อกตามชื่อที่ใกล้สุดรอบตัว คืน [x, y, z, ระยะ] (พิกัดกลางบล็อก) หรือ None
         public double[] find(String name, int range) {
