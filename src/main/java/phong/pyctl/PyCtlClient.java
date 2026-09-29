@@ -5,13 +5,17 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.GameOptions;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
@@ -21,6 +25,8 @@ import org.python.util.PythonInterpreter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -30,6 +36,7 @@ public class PyCtlClient implements ClientModInitializer {
     static final String[] NAMES = {"w", "a", "s", "d", "space", "shift", "sprint", "attack", "use"};
     static final boolean[] want = new boolean[NAMES.length];
     static final boolean[] was = new boolean[NAMES.length];
+    static final List<String> chatBuf = Collections.synchronizedList(new ArrayList<>());
     static volatile Thread running;
     static Path dir;
 
@@ -52,6 +59,11 @@ public class PyCtlClient implements ClientModInitializer {
         return v == null ? 0 : v;
     }
 
+    static boolean bool(Supplier<Boolean> s) {
+        Boolean v = onMain(s);
+        return v != null && v;
+    }
+
     static void tap(KeyBinding kb) {
         KeyBinding.onKeyPressed(InputUtil.fromTranslationKey(kb.getBoundKeyTranslationKey()));
     }
@@ -63,7 +75,39 @@ public class PyCtlClient implements ClientModInitializer {
         });
     }
 
+    static void addChat(String s) {
+        chatBuf.add(s);
+        while (chatBuf.size() > 100) chatBuf.remove(0);
+    }
+
+    static String idOf(ItemStack s) {
+        return Registries.ITEM.getId(s.getItem()).toString();
+    }
+
+    static String norm(String n) {
+        return n.contains(":") ? n : "minecraft:" + n;
+    }
+
+    static double[] findEntity(String type, double range) {
+        return onMain(() -> {
+            MinecraftClient c = mcc();
+            if (c.player == null || c.world == null) return null;
+            List<LivingEntity> list = c.world.getEntitiesByClass(LivingEntity.class,
+                c.player.getBoundingBox().expand(range), e -> e != c.player && e.isAlive());
+            LivingEntity best = null;
+            double bd = 1e18;
+            for (LivingEntity e : list) {
+                if (type != null && !Registries.ENTITY_TYPE.getId(e.getType()).toString().contains(type)) continue;
+                double d = e.squaredDistanceTo(c.player);
+                if (d < bd) { bd = d; best = e; }
+            }
+            if (best == null) return null;
+            return new double[]{best.getX(), best.getY() + best.getHeight() / 2.0, best.getZ(), Math.sqrt(bd)};
+        });
+    }
+
     public static class Api {
+        // ---------- ปุ่ม ----------
         public void key(String k, int v) {
             for (int i = 0; i < NAMES.length; i++) {
                 if (NAMES[i].equals(k)) want[i] = v != 0;
@@ -105,6 +149,7 @@ public class PyCtlClient implements ClientModInitializer {
             c.execute(() -> c.setScreen(null));
         }
 
+        // ---------- กล้อง ----------
         public void turn(double yaw, double pitch) {
             MinecraftClient c = mcc();
             c.execute(() -> {
@@ -137,6 +182,7 @@ public class PyCtlClient implements ClientModInitializer {
             });
         }
 
+        // ---------- สถานะตัวเรา ----------
         public double x() {
             return num(() -> { var p = mcc().player; return p == null ? 0.0 : p.getX(); });
         }
@@ -165,6 +211,177 @@ public class PyCtlClient implements ClientModInitializer {
             return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.getHungerManager().getFoodLevel(); });
         }
 
+        public double level() {
+            return num(() -> { var p = mcc().player; return p == null ? 0.0 : (double) p.experienceLevel; });
+        }
+
+        public double time() {
+            return num(() -> { var w = mcc().world; return w == null ? 0.0 : (double) (w.getTimeOfDay() % 24000L); });
+        }
+
+        public boolean onGround() {
+            return bool(() -> { var p = mcc().player; return p != null && p.isOnGround(); });
+        }
+
+        public boolean inWater() {
+            return bool(() -> { var p = mcc().player; return p != null && p.isTouchingWater(); });
+        }
+
+        public boolean sneaking() {
+            return bool(() -> { var p = mcc().player; return p != null && p.isSneaking(); });
+        }
+
+        public String dimension() {
+            String r = onMain(() -> {
+                var w = mcc().world;
+                return w == null ? "none" : w.getRegistryKey().getValue().toString();
+            });
+            return r == null ? "none" : r;
+        }
+
+        // ---------- กระเป๋า ----------
+        public String invItem(int i) {
+            String r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return "none";
+                PlayerInventory inv = p.getInventory();
+                if (i < 0 || i >= inv.size()) return "none";
+                return idOf(inv.getStack(i));
+            });
+            return r == null ? "none" : r;
+        }
+
+        public int invAmount(int i) {
+            Double v = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return 0.0;
+                PlayerInventory inv = p.getInventory();
+                if (i < 0 || i >= inv.size()) return 0.0;
+                return (double) inv.getStack(i).getCount();
+            });
+            return v == null ? 0 : v.intValue();
+        }
+
+        // ช่องแถบ 1-9
+        public String hotbar(int n) {
+            if (n < 1 || n > 9) return "none";
+            return invItem(n - 1);
+        }
+
+        // หาช่องแถบ 1-9 ที่มีของนี้ (0 = ไม่มี)
+        public int hotbarFind(String name) {
+            String id = norm(name);
+            for (int n = 1; n <= 9; n++) {
+                if (invItem(n - 1).equals(id)) return n;
+            }
+            return 0;
+        }
+
+        // หาช่องกระเป๋า 0-35 ที่มีของนี้ (-1 = ไม่มี)
+        public int invFind(String name) {
+            String id = norm(name);
+            for (int i = 0; i < 36; i++) {
+                if (invItem(i).equals(id)) return i;
+            }
+            return -1;
+        }
+
+        // จำนวนรวมของชิ้นนี้ในกระเป๋า
+        public int count(String name) {
+            String id = norm(name);
+            int total = 0;
+            for (int i = 0; i < 41; i++) {
+                if (invItem(i).equals(id)) total += invAmount(i);
+            }
+            return total;
+        }
+
+        public String held() {
+            String r = onMain(() -> {
+                var p = mcc().player;
+                return p == null ? "none" : idOf(p.getMainHandStack());
+            });
+            return r == null ? "none" : r;
+        }
+
+        // ความทนทานที่เหลือของที่ถือ (-1 = ไม่ใช่ของที่พัง)
+        public int heldDurability() {
+            Double v = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return -1.0;
+                ItemStack s = p.getMainHandStack();
+                if (!s.isDamageable()) return -1.0;
+                return (double) (s.getMaxDamage() - s.getDamage());
+            });
+            return v == null ? -1 : v.intValue();
+        }
+
+        // ---------- หน้าจอ GUI (หีบ คราฟต์ เตา ค้าขาย ฯลฯ) ----------
+        public String screen() {
+            String r = onMain(() -> {
+                var s = mcc().currentScreen;
+                return s == null ? "none" : s.getTitle().getString();
+            });
+            return r == null ? "none" : r;
+        }
+
+        public int screenSlots() {
+            Double v = onMain(() -> {
+                var p = mcc().player;
+                return p == null ? 0.0 : (double) p.currentScreenHandler.slots.size();
+            });
+            return v == null ? 0 : v.intValue();
+        }
+
+        public String screenItem(int i) {
+            String r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return "none";
+                var slots = p.currentScreenHandler.slots;
+                if (i < 0 || i >= slots.size()) return "none";
+                return idOf(slots.get(i).getStack());
+            });
+            return r == null ? "none" : r;
+        }
+
+        public int screenCount(int i) {
+            Double v = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return 0.0;
+                var slots = p.currentScreenHandler.slots;
+                if (i < 0 || i >= slots.size()) return 0.0;
+                return (double) slots.get(i).getStack().getCount();
+            });
+            return v == null ? 0 : v.intValue();
+        }
+
+        public int screenFind(String name) {
+            String id = norm(name);
+            int n = screenSlots();
+            for (int i = 0; i < n; i++) {
+                if (screenItem(i).equals(id)) return i;
+            }
+            return -1;
+        }
+
+        // mode: pickup (คลิกปกติ), quick (shift+คลิก), throw, swap (button = ช่องแถบ 0-8), clone
+        // button: 0 = ซ้าย, 1 = ขวา
+        public void slotClick(int slot, int button, String mode) {
+            MinecraftClient c = mcc();
+            c.execute(() -> {
+                if (c.player == null || c.interactionManager == null) return;
+                SlotActionType t = switch (mode) {
+                    case "quick" -> SlotActionType.QUICK_MOVE;
+                    case "throw" -> SlotActionType.THROW;
+                    case "swap" -> SlotActionType.SWAP;
+                    case "clone" -> SlotActionType.CLONE;
+                    default -> SlotActionType.PICKUP;
+                };
+                c.interactionManager.clickSlot(c.player.currentScreenHandler.syncId, slot, button, t, c.player);
+            });
+        }
+
+        // ---------- สิ่งที่เล็ง / บล็อก ----------
         public String target() {
             String r = onMain(() -> {
                 MinecraftClient c = mcc();
@@ -179,20 +396,15 @@ public class PyCtlClient implements ClientModInitializer {
             return r == null ? "none" : r;
         }
 
-        public double[] nearest(double range) {
+        // พิกัดบล็อกที่เล็ง [x, y, z] หรือ None
+        public double[] targetPos() {
             return onMain(() -> {
-                MinecraftClient c = mcc();
-                if (c.player == null || c.world == null) return null;
-                List<LivingEntity> list = c.world.getEntitiesByClass(LivingEntity.class,
-                    c.player.getBoundingBox().expand(range), e -> e != c.player && e.isAlive());
-                LivingEntity best = null;
-                double bd = 1e18;
-                for (LivingEntity e : list) {
-                    double d = e.squaredDistanceTo(c.player);
-                    if (d < bd) { bd = d; best = e; }
+                HitResult h = mcc().crosshairTarget;
+                if (h instanceof BlockHitResult b && h.getType() == HitResult.Type.BLOCK) {
+                    BlockPos p = b.getBlockPos();
+                    return new double[]{p.getX(), p.getY(), p.getZ()};
                 }
-                if (best == null) return null;
-                return new double[]{best.getX(), best.getY() + best.getHeight() / 2.0, best.getZ(), Math.sqrt(bd)};
+                return null;
             });
         }
 
@@ -222,7 +434,7 @@ public class PyCtlClient implements ClientModInitializer {
             return onMain(() -> {
                 MinecraftClient c = mcc();
                 if (c.world == null || c.player == null) return null;
-                String id = name.contains(":") ? name : "minecraft:" + name;
+                String id = norm(name);
                 BlockPos p = c.player.getBlockPos();
                 BlockPos.Mutable m = new BlockPos.Mutable();
                 double bd = 1e18;
@@ -245,6 +457,50 @@ public class PyCtlClient implements ClientModInitializer {
             });
         }
 
+        // ---------- มอน / ผู้เล่น ----------
+        public double[] nearest(double range) {
+            return findEntity(null, range);
+        }
+
+        // type = ส่วนของชื่อ เช่น "zombie", "creeper", "player"
+        public double[] nearestOf(String type, double range) {
+            return findEntity(type, range);
+        }
+
+        // รายการ [ชื่อชนิด, x, y, z, ระยะ, เลือด] ของสิ่งมีชีวิตรอบตัว
+        public Object[][] entities(double range) {
+            Object[][] r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.player == null || c.world == null) return new Object[0][];
+                List<LivingEntity> list = c.world.getEntitiesByClass(LivingEntity.class,
+                    c.player.getBoundingBox().expand(range), e -> e != c.player && e.isAlive());
+                List<Object[]> out = new ArrayList<>();
+                for (LivingEntity e : list) {
+                    out.add(new Object[]{
+                        Registries.ENTITY_TYPE.getId(e.getType()).toString(),
+                        e.getX(), e.getY(), e.getZ(),
+                        Math.sqrt(e.squaredDistanceTo(c.player)),
+                        (double) e.getHealth()});
+                }
+                return out.toArray(new Object[0][]);
+            });
+            return r == null ? new Object[0][] : r;
+        }
+
+        public String[] players() {
+            String[] r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.world == null) return new String[0];
+                List<String> out = new ArrayList<>();
+                for (var p : c.world.getPlayers()) {
+                    if (p != c.player) out.add(p.getName().getString());
+                }
+                return out.toArray(new String[0]);
+            });
+            return r == null ? new String[0] : r;
+        }
+
+        // ---------- แชท / คำสั่ง ----------
         public void say(String s) {
             msg(s);
         }
@@ -262,6 +518,18 @@ public class PyCtlClient implements ClientModInitializer {
             c.execute(() -> {
                 if (c.player != null) c.player.networkHandler.sendChatCommand(cmd);
             });
+        }
+
+        // แชทล่าสุด n ข้อความ (ใหม่สุดอยู่ท้าย)
+        public String[] chatLog(int n) {
+            synchronized (chatBuf) {
+                int from = Math.max(0, chatBuf.size() - n);
+                return chatBuf.subList(from, chatBuf.size()).toArray(new String[0]);
+            }
+        }
+
+        public void chatClear() {
+            chatBuf.clear();
         }
     }
 
@@ -288,6 +556,9 @@ public class PyCtlClient implements ClientModInitializer {
                 System.setProperty("python.cachedir.skip", "true");
                 PythonInterpreter py = new PythonInterpreter();
                 py.set("mc", new Api());
+                py.exec("import sys, __builtin__\n"
+                    + "__builtin__.mc = mc\n"
+                    + "sys.path.insert(0, r'" + dir.toString() + "')");
                 py.execfile(f.toString());
                 msg("[py] " + name + " จบแล้ว");
             } catch (Throwable e) {
@@ -323,6 +594,12 @@ public class PyCtlClient implements ClientModInitializer {
         } catch (Exception e) {
             e.printStackTrace();
         }
+
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            if (!overlay) addChat(message.getString());
+        });
+        ClientReceiveMessageEvents.CHAT.register((message, signed, sender, params, ts) ->
+            addChat(message.getString()));
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(ClientCommandManager.literal("py")
