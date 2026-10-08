@@ -483,27 +483,63 @@ public class PyCtlClient implements ClientModInitializer {
 
         public int hotbarFind(String name) {
             String id = norm(name);
-            for (int n = 1; n <= 9; n++) {
-                if (invItem(n - 1).equals(id)) return n;
-            }
-            return 0;
+            Integer r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return 0;
+                PlayerInventory inv = p.getInventory();
+                for (int n = 0; n < 9; n++) {
+                    if (idOf(inv.getStack(n)).equals(id)) return n + 1;
+                }
+                return 0;
+            });
+            return r == null ? 0 : r;
+        }
+
+        // จำนวนรวมของไอเทมนี้ในแถบ 9 ช่อง (เรียกครั้งเดียว เร็วกว่าไล่ทีละช่อง)
+        public int hotbarAmount(String name) {
+            String id = norm(name);
+            Integer r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return 0;
+                PlayerInventory inv = p.getInventory();
+                int total = 0;
+                for (int n = 0; n < 9; n++) {
+                    ItemStack st = inv.getStack(n);
+                    if (idOf(st).equals(id)) total += st.getCount();
+                }
+                return total;
+            });
+            return r == null ? 0 : r;
         }
 
         public int invFind(String name) {
             String id = norm(name);
-            for (int i = 0; i < 36; i++) {
-                if (invItem(i).equals(id)) return i;
-            }
-            return -1;
+            Integer r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return -1;
+                PlayerInventory inv = p.getInventory();
+                for (int i = 0; i < 36; i++) {
+                    if (idOf(inv.getStack(i)).equals(id)) return i;
+                }
+                return -1;
+            });
+            return r == null ? -1 : r;
         }
 
         public int count(String name) {
             String id = norm(name);
-            int total = 0;
-            for (int i = 0; i < 41; i++) {
-                if (invItem(i).equals(id)) total += invAmount(i);
-            }
-            return total;
+            Integer r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return 0;
+                PlayerInventory inv = p.getInventory();
+                int total = 0;
+                for (int i = 0; i < inv.size(); i++) {
+                    ItemStack st = inv.getStack(i);
+                    if (idOf(st).equals(id)) total += st.getCount();
+                }
+                return total;
+            });
+            return r == null ? 0 : r;
         }
 
         public String held() {
@@ -566,11 +602,16 @@ public class PyCtlClient implements ClientModInitializer {
 
         public int screenFind(String name) {
             String id = norm(name);
-            int n = screenSlots();
-            for (int i = 0; i < n; i++) {
-                if (screenItem(i).equals(id)) return i;
-            }
-            return -1;
+            Integer r = onMain(() -> {
+                var p = mcc().player;
+                if (p == null) return -1;
+                var slots = p.currentScreenHandler.slots;
+                for (int i = 0; i < slots.size(); i++) {
+                    if (idOf(slots.get(i).getStack()).equals(id)) return i;
+                }
+                return -1;
+            });
+            return r == null ? -1 : r;
         }
 
         public void slotClick(int slot, int button, String mode) {
