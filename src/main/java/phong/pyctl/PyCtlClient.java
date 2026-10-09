@@ -851,6 +851,30 @@ public class PyCtlClient implements ClientModInitializer {
             return r != null && r;
         }
 
+        // วางบล็อกลอยกลางอากาศ ไม่ต้องมีบล็อกแข็งติดข้าง ๆ (คลิกที่ตำแหน่งเป้าหมายตรง ๆ)
+        // เซิร์ฟเวอร์ที่มีระบบกันโกงอาจปฏิเสธหรือแบน ได้ True ถ้าวางสำเร็จ
+        public boolean placeAir(int x, int y, int z) {
+            Boolean r = onMain(() -> {
+                MinecraftClient c = mcc();
+                if (c.player == null || c.world == null || c.interactionManager == null) return false;
+                BlockPos pos = new BlockPos(x, y, z);
+                BlockState ps = c.world.getBlockState(pos);
+                if (!ps.getCollisionShape(c.world, pos).isEmpty()) return false;
+                double ex = pos.getX() + 0.5 - c.player.getX();
+                double ey = pos.getY() + 0.5 - c.player.getEyeY();
+                double ez = pos.getZ() + 0.5 - c.player.getZ();
+                if (ex * ex + ey * ey + ez * ez > 4.5 * 4.5) return false;
+                BlockHitResult bhr = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
+                ActionResult res = c.interactionManager.interactBlock(c.player, Hand.MAIN_HAND, bhr);
+                if (res.isAccepted()) {
+                    c.player.swingHand(Hand.MAIN_HAND);
+                    return true;
+                }
+                return false;
+            });
+            return r != null && r;
+        }
+
         // ตีมอนใกล้สุดตรง ๆ 1 ครั้ง (type = ส่วนของชื่อ หรือ '' = ทุกชนิด) True ถ้าตีโดน
         // คืน False ถ้าไม่มีมอนในระยะ หรือยังชาร์จดาเมจไม่เต็ม (เรียกซ้ำเรื่อย ๆ ได้)
         public boolean attackNearest(String type, double reach) {
